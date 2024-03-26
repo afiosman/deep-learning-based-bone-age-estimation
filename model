@@ -1,1 +1,762 @@
-hgng
+# Deep Learning for Bone Age Prediction
+# @author: Alexander F.I. Osman, Nov. 2023
+
+"""
+PART I: TRAINING THE MODEL
+
+This code demonstrates a 3D Fully-Connected Convolutional Neural Net architecture
+for bone age prediction.
+It takes a source X-ray image and predicts the patient's age.
+Architectures: 2D FCN
+
+Dataset: Private resipratory.
+
+The training process goes through the following steps:
+1. Load the data
+2. Pre-process the data (clean the data, resize, normalize, etc.)
+3. Build the model architecture (2D FCN)
+4. Train and validate the model for image translations
+"""
+
+###############################################################################
+# 1. LOADING A SAMPLE DATA SET AND VISUALIZE ##################################
+###############################################################################
+
+import numpy as np
+import pydicom as dicom
+import matplotlib
+matplotlib.use('TkAgg', force=True)
+import matplotlib.pyplot as plt
+import re
+
+
+# Initial understanding of the dataset.
+# specify your image path
+image_path = 'E:/Datasets/Hand_Bone_Age_Data/image-430.dcm'
+# Read the x-ray image of a sample patient
+ds = dicom.dcmread(image_path, 0)   # 0 for Grey scale images
+img = ds.pixel_array
+
+# Read some meta data
+print(f"Patient Age......: {ds.PatientAge}")
+print(f"Patient ID.......: {ds.PatientID}")
+print(f"Modality.........: {ds.Modality}")
+print(f"Study Date.......: {ds.StudyDate}")
+print(f"Image size.......: {ds.Rows} x {ds.Columns}")
+print(f"Pixel Spacing....: {ds.PixelSpacing}")
+print(f"Window Width ....: {ds.WindowWidth}")
+
+# Read patient age data
+#ptAge = re.split('(\d+)', ds.PatientAge)
+ptAge = list(re.findall(r'(\w+?)(\d+)', ds.PatientAge)[0])
+print(ptAge[1])
+age = np.asarray(ptAge[1], dtype=float)
+
+
+print("Used memory to store the image: ", img.nbytes/(1024*1024), "MB")
+
+# Plot
+plt.figure(figsize=(12, 8))
+plt.imshow(img, cmap=plt.cm.bone)
+plt.colorbar(label='intensity'), plt.title('x-ray image'), plt.axis('tight')
+plt.show()
+
+
+tx, ty = 52, 52  # translation on x and y axis, in pixels
+N, M = img.shape
+img_trans = np.zeros_like(img)
+img_trans[max(tx, 0):M+min(tx, 0), max(ty, 0):N+min(ty, 0)] = img[-min(tx,0):M-max(tx, 0), -min(ty, 0):N-max(ty, 0)]
+
+# Plot
+plt.figure(figsize=(12, 8))
+plt.imshow(img_trans, cmap=plt.cm.bone)
+plt.colorbar(label='intensity'), plt.title('x-ray image'), plt.axis('tight')
+plt.show()
+
+
+###############################################################################
+# 2. DATA PREPROCESSING #######################################################
+###############################################################################
+
+import numpy as np
+import pydicom as dicom
+import glob
+from tqdm import tqdm
+import matplotlib
+matplotlib.use('TkAgg', force=True)
+import matplotlib.pyplot as plt
+from scipy.ndimage import zoom
+from sklearn.model_selection import train_test_split
+from scipy import ndimage
+from skimage.transform import resize
+import re
+
+
+def proc_dicom_file(image_path):
+    """ Data loader (*.dcm)
+    :param image_path: 2D array images
+    """
+    img_data = []
+    age_data = []
+    for n, pt_id in tqdm(enumerate(image_path), total=len(image_path), desc='Loading'):
+        # Read radiograph images
+        ds = dicom.dcmread(pt_id, 0)  # Change 1 to 0 for Grey scale images
+        img = ds.pixel_array
+        # Normalize the images to 256 scale
+        img = (img / 4095) * 255
+        # Resize across xy plane
+        desired_width, desired_height = 512, 512    # desire dimension
+        current_width, current_height = img.shape[0], img.shape[1]
+        #print(img.shape[0])
+        #print(img.shape[1])
+        # Compute depth factor
+        width = current_width / desired_width
+        height = current_height / desired_height
+        width_factor = 1 / width
+        height_factor = 1 / height
+        img = ndimage.zoom(img, (width_factor, height_factor), order=1)
+        img_data.append(img)
+
+        # Read patient age
+        ptAge = re.split('(\d+)', ds.PatientAge)
+        ptAge = list(re.findall(r'(\w+?)(\d+)', ds.PatientAge)[0])
+        age = np.asarray(ptAge[1], dtype='float32')
+        age_data.append(age)
+
+    return np.array(img_data), np.array(age_data)
+
+def data_augment(x):
+    """
+    #Returns two arrays:
+    #:param img: image set
+    #:return: augmented array images
+    """
+    data_aug_trans = []
+    for k in tqdm(range(len(x)), desc='Augmenting images'):
+        tx, ty = 52, 52  # translation on x and y axis 10%, in pixels
+        N, M = x[k][0].shape, x[k][1].shape
+        N, M = N[0], M[0]
+        img_trans = np.zeros_like(x[k])
+        img_trans[max(tx, 0):M + min(tx, 0), max(ty, 0):N + min(ty, 0)] = x[k][-min(tx, 0):M - max(tx, 0), -min(ty, 0): N - max(ty, 0)]
+        data_aug_trans.append(img_trans)
+    return np.array(data_aug_trans)
+
+
+# Read x-ray radiograph images and patient age
+# Process the images (crop, resize, & normalize)
+dir_path = 'E:/Datasets/Hand_Bone_Age_Data/'
+image_path = sorted(glob.glob(dir_path + '/*.dcm'))
+img_data, age_data = proc_dicom_file(image_path)
+
+image_path = np.expand_dims(image_path, -1)
+img_data = np.expand_dims(img_data, -1)
+
+# Split data to training, validation, and test sets
+x_train, x_test, y_train, y_test = train_test_split(img_data.astype('float32'), age_data.astype('float32'),
+                                                    test_size=0.20, random_state=1)
+x_train, x_val, y_train, y_val = train_test_split(x_train.astype('float32'), y_train.astype('float32'),
+                                                  test_size=0.20, random_state=1)
+
+# Data augmentation
+x_train_aug = data_augment(x_train)
+
+x_train = np.concatenate((x_train, x_train_aug),  axis=0)
+y_train = np.concatenate((y_train, y_train))
+
+
+print("Used memory to store img_data: ", img_data.astype('float32').nbytes / (1024 * 1024), "MB")
+print("Used memory to store age_data: ", age_data.nbytes / (1024 * 1024), "MB")
+print("Used memory to store x_train: ", x_train.nbytes / (1024 * 1024), "MB")
+print("Used memory to store y_train: ", y_train.nbytes / (1024 * 1024), "MB")
+print("Used memory to store x_val: ", x_val.nbytes / (1024 * 1024), "MB")
+print("Used memory to store y_val: ", y_val.nbytes / (1024 * 1024), "MB")
+print("Used memory to store x_test: ", x_test.nbytes / (1024 * 1024), "MB")
+print("Used memory to store y_test: ", y_test.nbytes / (1024 * 1024), "MB")
+
+# Plot
+plt.figure(figsize=(12, 8))
+plt.subplot(241)
+plt.imshow(img_data[0], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+plt.subplot(242)
+plt.imshow(img_data[1], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+plt.subplot(243)
+plt.imshow(img_data[2], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+plt.subplot(244)
+plt.imshow(img_data[3], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+plt.subplot(245)
+plt.imshow(img_data[4], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+plt.subplot(246)
+plt.imshow(img_data[5], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+plt.subplot(247)
+plt.imshow(img_data[6], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+plt.subplot(248)
+plt.imshow(img_data[7], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+plt.show()
+
+
+
+# Plot
+age_data = age_data.astype(int)
+plt.figure(figsize=(5, 5))
+num_bins = 18
+plt.hist(age_data, num_bins, color='b', linewidth=0.5, edgecolor="white")
+plt.title('distribution', fontsize=16, fontweight='bold'), plt.axis('tight')
+plt.ylabel('number of patients', fontsize=16, fontweight='bold')
+plt.xlabel('bone age (years)', fontsize=16, fontweight='bold')
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.legend(['male & female'], fontsize=14, loc='upper right')
+plt.show()
+
+
+# Plot
+age_data = age_data.astype(int)
+plt.figure(figsize=(5, 5))
+mu = 10.3
+sigma = 3.3
+x = mu + sigma * np.random.randn(1000)
+num_bins = 18
+n, bins, patches = plt.hist(age_data, num_bins, density=True, histtype='bar', color='b', alpha=0.99)
+y = ((1 / (np.sqrt(2 * np.pi) * sigma)) *
+     np.exp(-0.5 * (1 / sigma * (bins - mu)) ** 2))
+plt.plot(bins, y, '--', color='black')
+plt.title('distribution', fontsize=16, fontweight='bold'), plt.axis('tight')
+plt.ylabel('frequency', fontsize=16)
+plt.xlabel('bone age (years)', fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.legend(['male & female'], fontsize=14, loc='upper right')
+plt.show()
+
+
+###############################################################################
+# 3. BUILD THE MODEL ARCHITECTURE #############################################
+###############################################################################
+
+from keras.layers import Input, Conv2D, MaxPooling2D, BatchNormalization, Activation, \
+    GlobalAveragePooling2D, Dense, Flatten, Dropout
+from keras.models import Model
+import tensorflow as tf
+import random
+
+
+# Here, we'll use a FCNN model with two densely connected hidden layers,
+# and an output layer that returns a single, continuous value. Regularisation
+# helps prevent over-fitting (try adjusting the values; higher numbers = more
+# regularisation. Regularisation may be type l1 or l2.)
+
+from numpy.random import seed
+seed(42)
+import tensorflow
+tensorflow.random.set_seed(42)
+
+
+def build_fcnn_model(img_width, img_height, img_channels):
+    """ Build a 3D Fully-Connected Convolutional Neural Network Architecture
+     :param input_shape: (image height, image width, image depth, image channels)
+     :return: model
+     """
+    inputs = Input((img_height, img_width, img_channels))
+    ini_numb_of_filters = 64
+
+    """ 1st Convolutional Layers """
+    x1 = Conv2D(ini_numb_of_filters, kernel_size=(3, 3), strides=(2, 2), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(inputs)
+    x1 = Conv2D(ini_numb_of_filters, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                dilation_rate=(1, 1), activation='relu', kernel_initializer='he_uniform')(x1)
+    x1 = MaxPooling2D(pool_size=(2, 2))(x1)
+    x1 = BatchNormalization()(x1)
+    x1 = Dropout(0.05)(x1)
+
+    """ 2nd Convolutional Layers """
+    x2 = Conv2D(ini_numb_of_filters * 2, kernel_size=(3, 3), strides=(2, 2), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x1)
+    x2 = Conv2D(ini_numb_of_filters * 2, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                dilation_rate=(1, 1), activation='relu', kernel_initializer='he_uniform')(x2)
+    x2 = MaxPooling2D(pool_size=(2, 2))(x2)
+    x2 = BatchNormalization()(x2)
+    x2 = Dropout(0.10)(x2)
+
+    """ 3rd Convolutional Layers """
+    x3 = Conv2D(ini_numb_of_filters * 4, kernel_size=(3, 3), strides=(2, 2), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x2)
+    x3 = Conv2D(ini_numb_of_filters * 4, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                dilation_rate=(1, 1), activation='relu', kernel_initializer='he_uniform')(x3)
+    x3 = MaxPooling2D(pool_size=(2, 2))(x3)
+    x3 = BatchNormalization()(x3)
+    x3 = Dropout(0.15)(x3)
+
+    """ 4th Convolutional Layers """
+    x4 = Conv2D(ini_numb_of_filters * 8, kernel_size=(3, 3), strides=(2, 2), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x3)
+    x4 = Conv2D(ini_numb_of_filters * 8, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                dilation_rate=(1, 1), activation='relu', kernel_initializer='he_uniform')(x4)
+    x4 = MaxPooling2D(pool_size=(2, 2))(x4)
+    x4 = BatchNormalization()(x4)
+    x4 = Dropout(0.20)(x4)
+
+    """ Fully-Connected Layers """
+#    xc = Flatten()(x4)
+    xc = GlobalAveragePooling2D()(x4)
+
+    """ Dense-layer 1 """
+    xc1 = Dense(ini_numb_of_filters * 16, activation="relu", kernel_initializer='he_uniform')(xc)
+    xc1 = Dropout(0.25)(xc1)
+
+    """ Dense-layer 2 """
+    xc2 = Dense(ini_numb_of_filters * 16, activation="relu", kernel_initializer='he_uniform')(xc1)
+    xc2 = Dropout(0.25)(xc2)
+
+    """ Dense-layer 3 """
+    xc3 = Dense(ini_numb_of_filters * 16, activation="relu", kernel_initializer='he_uniform')(xc2)
+    xc3 = Dropout(0.25)(xc3)
+
+    """ Output Layer """
+    outputs = Dense(1, activation="relu")(xc3)
+
+    """ Model """
+    model = Model(inputs=[inputs], outputs=[outputs], name="build_fcnn_model")
+    #compile model outside of this function to make it flexible.
+    model.summary()
+    return model
+
+
+# Test if everything is working ok.
+model = build_fcnn_model(512, 512, 1)
+print(model.input_shape)
+print(model.output_shape)
+
+
+def build_fcnn_model1(img_width, img_height, img_channels):
+    """ Build a 3D Fully-Connected Convolutional Neural Network Architecture
+     :param input_shape: (image height, image width, image depth, image channels)
+     :return: model
+     """
+    inputs = Input((img_height, img_width, img_channels))
+    ini_numb_of_filters = 64
+
+    """ 1st Convolutional Layers """
+    x1 = Conv2D(ini_numb_of_filters, kernel_size=(3, 3), strides=(2, 2), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(inputs)
+    x1 = MaxPooling2D(pool_size=(2, 2))(x1)
+    x1 = BatchNormalization()(x1)
+    x1 = Dropout(0.05)(x1)
+
+    """ 2nd Convolutional Layers """
+    x2 = Conv2D(ini_numb_of_filters * 2, kernel_size=(3, 3), strides=(2, 2), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x1)
+    x2 = MaxPooling2D(pool_size=(2, 2))(x2)
+    x2 = BatchNormalization()(x2)
+    x2 = Dropout(0.10)(x2)
+
+    """ 3rd Convolutional Layers """
+    x3 = Conv2D(ini_numb_of_filters * 4, kernel_size=(3, 3), strides=(2, 2), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x2)
+    x3 = MaxPooling2D(pool_size=(2, 2))(x3)
+    x3 = BatchNormalization()(x3)
+    x3 = Dropout(0.15)(x3)
+
+    """ 4th Convolutional Layers """
+    x4 = Conv2D(ini_numb_of_filters * 8, kernel_size=(3, 3), strides=(2, 2), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x3)
+    x4 = MaxPooling2D(pool_size=(2, 2))(x4)
+    x4 = BatchNormalization()(x4)
+    x4 = Dropout(0.20)(x4)
+
+    """ Fully-Connected Layers """
+#    xc = Flatten()(x4)
+    xc = GlobalAveragePooling2D()(x4)
+
+    """ Hidden-layer 1 """
+    xc1 = Dense(ini_numb_of_filters * 16, activation="relu", kernel_initializer='he_uniform')(xc)
+    xc1 = Dropout(0.25)(xc1)
+
+    """ Hidden-layer 2 """
+    xc2 = Dense(ini_numb_of_filters * 16, activation="relu", kernel_initializer='he_uniform')(xc1)
+    xc2 = Dropout(0.25)(xc2)
+
+    """ Output Layer """
+    outputs = Dense(1, activation="relu")(xc2)
+
+    """ Model """
+    model = Model(inputs=[inputs], outputs=[outputs], name="build_fcnn_model1")
+    #compile model outside of this function to make it flexible.
+    model.summary()
+    return model
+
+
+# Test if everything is working ok.
+model = build_fcnn_model1(512, 512, 1)
+print(model.input_shape)
+print(model.output_shape)
+
+
+def build_fcnn_model2(img_width, img_height, img_channels):
+    """ Build a 3D Fully-Connected Convolutional Neural Network Architecture
+     :param input_shape: (image height, image width, image depth, image channels)
+     :return: model
+     """
+    inputs = Input((img_height, img_width, img_channels))
+    ini_numb_of_filters = 64
+
+    """ 1st Convolutional Layers """
+    x1 = Conv2D(ini_numb_of_filters, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(inputs)
+#    x1 = BatchNormalization()(x1)
+    x1 = Conv2D(ini_numb_of_filters, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x1)
+#    x1 = BatchNormalization()(x1)
+    x1 = MaxPooling2D(pool_size=(2, 2))(x1)
+#    x1 = BatchNormalization()(x1)
+    x1 = Dropout(0.05)(x1)
+
+    """ 2nd Convolutional Layers """
+    x2 = Conv2D(ini_numb_of_filters * 2, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x1)
+#    x2 = BatchNormalization()(x2)
+    x2 = Conv2D(ini_numb_of_filters * 2, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x2)
+#    x2 = BatchNormalization()(x2)
+    x2 = MaxPooling2D(pool_size=(2, 2))(x2)
+#    x2 = BatchNormalization()(x2)
+    x2 = Dropout(0.10)(x2)
+
+    """ 3rd Convolutional Layers """
+    x3 = Conv2D(ini_numb_of_filters * 4, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x2)
+#    x3 = BatchNormalization()(x3)
+    x3 = Conv2D(ini_numb_of_filters * 4, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x3)
+#    x3 = BatchNormalization()(x3)
+    x3 = Conv2D(ini_numb_of_filters * 4, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x3)
+#    x3 = BatchNormalization()(x3)
+    x3 = MaxPooling2D(pool_size=(2, 2))(x3)
+#    x3 = BatchNormalization()(x3)
+    x3 = Dropout(0.15)(x3)
+
+    """ 4th Convolutional Layers """
+    x4 = Conv2D(ini_numb_of_filters * 8, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x3)
+#    x4 = BatchNormalization()(x4)
+    x4 = Conv2D(ini_numb_of_filters * 8, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x4)
+#    x4 = BatchNormalization()(x4)
+    x4 = Conv2D(ini_numb_of_filters * 8, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x4)
+#    x4 = BatchNormalization()(x4)
+    x4 = MaxPooling2D(pool_size=(2, 2))(x4)
+#    x4 = BatchNormalization()(x4)
+    x4 = Dropout(0.20)(x4)
+
+    """ 5th Convolutional Layers """
+    x5 = Conv2D(ini_numb_of_filters * 8, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x4)
+#    x5 = BatchNormalization()(x4)
+    x5 = Conv2D(ini_numb_of_filters * 8, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x5)
+    #    x5 = BatchNormalization()(x5)
+    x5 = Conv2D(ini_numb_of_filters * 8, kernel_size=(3, 3), strides=(1, 1), padding='same',
+                activation='relu', kernel_initializer='he_uniform')(x5)
+#    x5 = BatchNormalization()(x5)
+    x5 = MaxPooling2D(pool_size=(2, 2))(x5)
+#    x5 = BatchNormalization()(x5)
+    x5 = Dropout(0.20)(x5)
+
+    """ Fully-Connected Layers """
+#    xc = Flatten()(x5)
+    xc = GlobalAveragePooling2D()(x5)
+
+    """ Hidden-layer 1 """
+    xc1 = Dense(ini_numb_of_filters * 16, activation="relu", kernel_initializer='he_uniform')(xc)
+    xc1 = Dropout(0.25)(xc1)
+
+    """ Hidden-layer 2 """
+    xc2 = Dense(ini_numb_of_filters * 16, activation="relu", kernel_initializer='he_uniform')(xc1)
+    xc2 = Dropout(0.25)(xc2)
+
+    """ Output Layer """
+    outputs = Dense(1, activation="relu")(xc2)
+
+    """ Model """
+    model = Model(inputs=[inputs], outputs=[outputs], name="build_fcnn_model2")
+    #compile model outside of this function to make it flexible.
+    model.summary()
+    return model
+
+
+# Test if everything is working ok.
+model = build_fcnn_model2(512, 512, 1)
+print(model.input_shape)
+print(model.output_shape)
+
+
+###############################################################################
+# 4. TRAINING THE MODEL #######################################################
+###############################################################################
+
+import pandas as pd
+import time
+from keras.callbacks import EarlyStopping, ModelCheckpoint, CSVLogger, ReduceLROnPlateau
+import matplotlib
+matplotlib.use('TkAgg', force=True)
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from keras.optimizers import SGD, RMSprop, Adam
+import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
+
+def plot_learning_curve(filepath):
+    df = pd.read_csv(filepath)
+    df_x, df_yt, df_yv = df.values[:, 0], df.values[:, 2], df.values[:, 5]
+    plt.figure(figsize=(5, 4))
+    plt.plot(df_x, df_yt)
+    plt.plot(df_x, df_yv)
+    # plt.title('average training and validation loss')
+    plt.ylabel('MSE', fontsize=16)
+    plt.xlabel('epoch', fontsize=16)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
+    plt.legend(['training error', 'validation error'], fontsize=14, loc='upper right')
+    plt.show()
+    return
+
+
+# Compile the model
+#reduce_lr = ReduceLROnPlateau(monitor='val_loss', mode='auto', factor=0.2, patience=6, min_lr=0.00000001)
+loss = 'mse'
+metrics = ['accuracy', 'mae']
+optimizer = Adam(learning_rate=0.0001, beta_1=0.9, beta_2=0.999)    # SGD
+
+model = build_fcnn_model(img_width=512, img_height=512, img_channels=1)
+#model = build_fcnn_model1(img_width=512, img_height=512, img_channels=1)
+#model = build_fcnn_model2(img_width=512, img_height=512, img_channels=1)
+model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
+print(model.summary())
+print(model.input_shape)
+print(model.output_shape)
+
+# Hyperparameters
+epochs = 120
+batch_size = 8
+steps_per_epoch = len(x_train) // batch_size
+val_steps_per_epoch = len(x_val) // batch_size
+
+# Callbacks
+checkpoint_filepath = 'saved_model/Bone_Age_Pred_best_model.epoch{epoch:02d}-loss{val_loss:.2f}.hdf5'
+callbacks = [
+    EarlyStopping(patience=50, monitor='val_loss', restore_best_weights=False, verbose=1),
+    ModelCheckpoint(filepath=checkpoint_filepath, monitor='val_loss', verbose=1, save_best_only=True),
+    CSVLogger('Bone_Age_Pred_logs.csv',  separator=','),
+    ReduceLROnPlateau(monitor="val_loss", factor=0.1, patience=10, min_lr=1e-7, verbose=1)]
+
+
+y_train = y_train * 12
+y_val = y_val * 12
+y_test = y_test * 12
+
+# Train the model
+start = time.time()
+history = model.fit(x_train, y_train,
+                    steps_per_epoch=steps_per_epoch,
+                    batch_size=batch_size,
+                    epochs=epochs,
+                    verbose=1,
+                    callbacks=[callbacks],
+                    validation_data=(x_val, y_val),
+                    validation_steps=val_steps_per_epoch,
+                    shuffle=False)
+
+finish = time.time()
+print('total exec. time (h)): ', (finish - start)/3600.)
+print('Training has been finished successfully')
+
+# Save the trained model
+model.save('saved_model/Bone_Age_Pred.hdf5')
+
+# plot the training and validation accuracy and loss at each epoch
+#filepath = 'Bone_Age_Pred_logs_best.csv'
+#filepath = 'Bone_Age_Pred_logs_best2.csv'
+#filepath = 'Bone_Age_Pred_logs_best3.csv'
+filepath = 'Bone_Age_Pred_logs.csv'
+plot_learning_curve(filepath)
+
+
+###############################################################################
+# 5. MAKE PREDICTIONS #########################################################
+###############################################################################
+
+from keras.models import load_model
+import matplotlib
+matplotlib.use('TkAgg', force=True)
+import matplotlib.pyplot as plt
+
+
+# Load the trained model
+#new_model = load_model('saved_model/Bone_Age_Pred_best.hdf5')
+#new_model = load_model('saved_model/Bone_Age_Pred_best2.hdf5')
+#new_model = load_model('saved_model/Bone_Age_Pred_best3.hdf5')
+new_model = load_model('saved_model/Bone_Age_Pred.hdf5')
+
+# Check the model's architecture
+new_model.summary()
+
+# Make predictions on test set
+y_pred = new_model.predict(x_test, verbose=1, batch_size=4)
+#y_pred = np.round(y_pred, 1)
+
+
+###############################################################################
+# 6. EVALUATE THE MODEL PERFORMANCE  ##########################################
+###############################################################################
+
+import numpy as np
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error, \
+    mean_absolute_percentage_error, median_absolute_error, max_error, PredictionErrorDisplay
+import matplotlib
+matplotlib.use('TkAgg', force=True)
+import matplotlib.pyplot as plt
+
+
+# Evaluating the model using R² Evaluation Metric, MAE, MSE
+#y_test = [3, -0.5, 2, 7]
+#y_pred = [2.5, 0.0, 2, 8]
+#y_test = y_test.astype(np.uint)
+print("R2 value ........:", np.round(r2_score(y_test, y_pred), 3))
+print("MAE value .......:", np.round(mean_absolute_error(y_test, y_pred), 3))
+print("MSE value .......:", np.round(mean_squared_error(y_test, y_pred, squared=True), 3))
+print("RMSE value .......:", np.round(mean_squared_error(y_test, y_pred, squared=False), 3))
+print("MAPE value ......:", np.round(mean_absolute_percentage_error(y_test, y_pred), 3))
+print("MedAE value ......:", np.round(median_absolute_error(y_test, y_pred), 3))
+print("MaxE value ......:", np.round(max_error(y_test, y_pred), 3))
+
+
+## Customized your plot and set a selected style
+#import matplotlib.pyplot as plt
+print(plt.style.available)
+plt.style.use("seaborn-v0_8")
+#plt.style.use("Solarize_Light2")  # light yellow
+#plt.style.use("_classic_test_patch")
+#plt.style.use("seaborn-talk")   #############
+#plt.style.use("seaborn-whitegrid")
+#plt.style.use("tableau-colorblind10")
+#plt.style.use('_mpl-gallery')
+#plt.style.use('_mpl-gallery-nogrid')    # tight
+#plt.style.use('bmh')
+#plt.style.use('classic')
+#plt.style.use('fivethirtyeight')
+#plt.style.use('ggplot') # default
+
+
+# Plot
+fig, ax = plt.subplots()
+#plt.figure(figsize=(4, 4))
+ax.scatter(y_test, y_pred, color="blue", linewidth=3)
+#plt.scatter(np.arange(0, 24 * 12, 1, dtype=int), np.arange(0, 24 * 12, 1, dtype=int), color="black")
+#plt.plot(y_test, y_pred, color="blue", linewidth=3)
+ax.plot(np.arange(0, 24 * 12, 1, dtype=int), np.arange(0, 24 * 12, 1, dtype=int), color="black", linestyle='--', linewidth=3)
+#plt.title('predicted vs actual bone age (months)', fontsize=18, fontweight='bold')
+plt.xlabel('actual bone age (months)', fontsize=16)
+plt.ylabel('predicted bone age (months)', fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.legend(['predictions', 'actual'], fontsize=14, loc='upper left')
+#plt.grid(color='k', linestyle='--', linewidth=2)
+plt.tight_layout()
+plt.show()
+
+
+# Plot
+fig, axs = plt.subplots()
+PredictionErrorDisplay.from_predictions(y_test, y_pred=y_pred, kind="actual_vs_predicted",
+                                        subsample=100, ax=axs, random_state=0)
+plt.xlabel('actual bone age (months)', fontsize=16)
+plt.ylabel('predicted bone age (months)', fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.legend(['actual', 'predictions'], fontsize=14, loc='upper left')
+plt.tight_layout()
+plt.show()
+
+# Plot
+fig, axs = plt.subplots()
+#axs[0].set_title("actual bone age (months) vs. predicted bone age (months)", fontsize=16)
+PredictionErrorDisplay.from_predictions(y_test, y_pred=y_pred.T,
+                                        kind="residual_vs_predicted", subsample=100, ax=axs, random_state=0)
+#axs[1].set_title("residuals vs. predicted bone age (months)", fontsize=16)
+#fig.suptitle("Plotting cross-validated predictions", fontsize=16)
+plt.xlabel('predicted bone age (months)', fontsize=16)
+plt.ylabel('residual (actual - predicted) (months)', fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.tight_layout()
+plt.show()
+
+
+# Plot
+fig, axs = plt.subplots(ncols=2, figsize=(8, 4))
+PredictionErrorDisplay.from_predictions(y_test, y_pred=y_pred, kind="actual_vs_predicted",
+                                        subsample=100, ax=axs[0], random_state=0)
+#axs[0].set_title("actual bone age (months) vs. predicted bone age (months)", fontsize=16)
+PredictionErrorDisplay.from_predictions(y_test, y_pred=y_pred.T,
+                                        kind="residual_vs_predicted", subsample=100, ax=axs[1], random_state=0)
+#axs[1].set_title("residuals vs. predicted bone age (months)", fontsize=16)
+#fig.suptitle("Plotting cross-validated predictions", fontsize=16)
+plt.tight_layout()
+plt.show()
+
+
+## Reset the plot configurations to default
+import matplotlib.pyplot as plt
+plt.rcdefaults()
+
+# Plot
+plt.figure(figsize=(12, 8))
+plt.subplot(241)
+plt.imshow(x_test[0], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+print("actual age (yrs) :", np.round(y_test[0], 1), "predicted age (yrs) :", np.round(y_pred[0], 1))
+plt.subplot(242)
+plt.imshow(x_test[1], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+print("actual age (yrs) :", np.round(y_test[1], 1), "predicted age (yrs) :", np.round(y_pred[1], 1))
+plt.subplot(243)
+plt.imshow(x_test[2], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+print("actual age (yrs) :", np.round(y_test[2], 1), "predicted age (yrs) :", np.round(y_pred[2], 1))
+plt.subplot(244)
+plt.imshow(x_test[3], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+print("actual age (yrs) :", np.round(y_test[3], 1), "predicted age (yrs) :", np.round(y_pred[3], 1))
+plt.subplot(245)
+plt.imshow(x_test[4], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+print("actual age (yrs) :", np.round(y_test[4], 1), "predicted age (yrs) :", np.round(y_pred[4], 1))
+plt.subplot(246)
+plt.imshow(x_test[5], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+print("actual age (yrs) :", np.round(y_test[5], 1), "predicted age (yrs) :", np.round(y_pred[5], 1))
+plt.subplot(247)
+plt.imshow(x_test[6], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+print("actual age (yrs) :", np.round(y_test[6], 1), "predicted age (yrs) :", np.round(y_pred[6], 1))
+plt.subplot(248)
+plt.imshow(x_test[7], cmap='gray')
+plt.colorbar(), plt.title('x-ray image'), plt.axis('tight')
+print("actual age (yrs) :", np.round(y_test[7], 1), "predicted age (yrs) :", np.round(y_pred[7], 1))
+plt.show()
+
+
+###############################################################################
+################################# THE END #####################################
+###############################################################################
