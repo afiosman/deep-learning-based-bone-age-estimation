@@ -6,3 +6,9 @@ We propose a deep learning-based model utilizing a fully connected convolutional
 ![image](https://github.com/afiosman/deep_learning_based_bone_age_estimation/assets/10604649/eecd2def-0795-4413-b048-9a32432fc47d)
  
 Fig. 4. Actual and predicted bone age (in years) of some example patients on the test data set. 
+
+# Availability of data and materials
+The datasets used in this study are private. 
+
+# Paper
+Please cite this paper: XXXXXXXXXX
