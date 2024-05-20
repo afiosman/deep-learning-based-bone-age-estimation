@@ -3,9 +3,9 @@
 We propose a deep learning-based model utilizing a fully connected convolutional neural network (CNN) to predict bone age from left-hand radiographs. 
 
 
-![image](https://github.com/afiosman/deep_learning_based_bone_age_estimation/assets/10604649/eecd2def-0795-4413-b048-9a32432fc47d)
+![image](https://github.com/afiosman/deep-learning-based-bone-age-estimation/assets/10604649/a08d00e6-bd89-47df-8e7b-07c939149445)
  
-Fig. 4. Actual and predicted bone age (in years) of some example patients on the test data set. 
+Fig. 4. Ground-truth and predicted bone age (in years) of some example patients on the test data set. 
 
 # Availability of data and materials
 The datasets used in this study are private. 
